@@ -2,34 +2,52 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
-	"time"
+	"sync"
 
 	"github.com/gliderlabs/ssh"
 	"github.com/teris-io/shortid"
 	gossh "golang.org/x/crypto/ssh"
 )
 
-func main() {
-	sshPort := ":2222"
+var clients sync.Map
 
-	respCh := make(chan string)
-	go func() {
-		time.Sleep(time.Second * 3)
-		id, _ := shortid.Generate()
-		respCh <- "http://webhooker.com/" + id
+type HTTPHandler struct {
+}
 
-		time.Sleep(time.Second * 5)
-		for {
-			time.Sleep(time.Second * 2)
-			respCh <- "received data from hook"
-		}
-	}()
-	handler := &SHHHandler{
-		respCh: respCh,
+func (h *HTTPHandler) handleWebhook(w http.ResponseWriter, r *http.Request) {
+	fmt.Println(r.PathValue("id"))
+	id := r.PathValue("id")
+	ch, ok := clients.Load(id)
+	if !ok {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte("client id not found"))
+
 	}
+	b, err := io.ReadAll(r.Body)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer r.Body.Close()
+	ch.(chan string) <- string(b)
+}
 
+func startHTTPServer() error {
+	httpPort := ":5000"
+	router := http.NewServeMux()
+
+	handler := &HTTPHandler{}
+	router.HandleFunc("/{id}/*", handler.handleWebhook)
+	return http.ListenAndServe(httpPort, router)
+
+}
+
+func startSSHServer() error {
+	sshPort := ":2222"
+	handler := &SHHHandler{}
 	server := ssh.Server{
 		Addr:    sshPort,
 		Handler: handler.handleSSFSession,
@@ -55,29 +73,29 @@ func main() {
 	}
 	server.AddHostKey(privateKey)
 	log.Printf("Starting SSH server on port %s", sshPort)
-	log.Fatal(server.ListenAndServe())
+	return (server.ListenAndServe())
+
+}
+
+func main() {
+	go startSSHServer()
+	startHTTPServer()
 
 }
 
 type SHHHandler struct {
-	respCh chan string
 }
 
 func (h *SHHHandler) handleSSFSession(session ssh.Session) {
-	forwardURL := session.RawCommand()
-	_ = forwardURL
-	resp := <-h.respCh
-	fmt.Println(resp)
-	if forwardURL == "" {
-		fmt.Println("No command received.")
-		return
-	}
-	session.Write([]byte(resp + "\n"))
+	id := shortid.MustGenerate()
+	weebhookURL := "http://webhooker.com/" + id
+	session.Write([]byte(weebhookURL))
 
-	for data := range h.respCh {
+	respCh := make(chan string)
+	clients.Store(id, respCh)
+
+	for data := range respCh {
 		session.Write([]byte(data + "\n"))
 	}
-
 	//fmt.Fprintf(session, "You sent: %s\n", forwardURL) // writes back tot he client
-
 }
