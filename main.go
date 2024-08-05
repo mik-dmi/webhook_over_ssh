@@ -47,7 +47,7 @@ func startHTTPServer() error {
 
 func startSSHServer() error {
 	sshPort := ":2222"
-	handler := &SHHHandler{}
+	handler := NewSSHHandler()
 	server := ssh.Server{
 		Addr:    sshPort,
 		Handler: handler.handleSSFSession,
@@ -83,19 +83,38 @@ func main() {
 
 }
 
-type SHHHandler struct {
+type SSHHandler struct {
+	channels map[string]chan string
 }
 
-func (h *SHHHandler) handleSSFSession(session ssh.Session) {
-	id := shortid.MustGenerate()
-	weebhookURL := "http://webhooker.com/" + id
-	session.Write([]byte(weebhookURL))
-
-	respCh := make(chan string)
-	clients.Store(id, respCh)
-
-	for data := range respCh {
-		session.Write([]byte(data + "\n"))
+func NewSSHHandler() *SSHHandler {
+	return &SSHHandler{
+		channels: make(map[string]chan string),
 	}
+}
+
+func (h *SSHHandler) handleSSFSession(session ssh.Session) {
+	cmd := session.RawCommand()
+	if cmd == "init" {
+		id := shortid.MustGenerate()
+		weebhookURL := "http://localhost:5000/" + id + "\n"
+		session.Write([]byte(weebhookURL))
+		respCh := make(chan string)
+		h.channels[id] = respCh
+		clients.Store(id, respCh)
+	}
+
+	if len(cmd) > 0 && cmd != "init" {
+		respCh, ok := h.channels[cmd]
+		if !ok {
+			session.Write([]byte("invalid weebhook id\n"))
+			return
+		}
+		for data := range respCh {
+			session.Write([]byte(data + "\n"))
+		}
+
+	}
+
 	//fmt.Fprintf(session, "You sent: %s\n", forwardURL) // writes back tot he client
 }
