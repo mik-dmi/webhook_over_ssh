@@ -1,8 +1,8 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 )
@@ -10,7 +10,7 @@ import (
 func main() {
 	router := http.NewServeMux()
 
-	router.HandleFunc("Post /pagement/webhook", handlePaymentWebhook)
+	router.HandleFunc("POST /payment/webhook", handlePaymentWebhook)
 	http.ListenAndServe(":3000", router)
 }
 
@@ -20,10 +20,11 @@ type WebhookRequest struct {
 }
 
 func handlePaymentWebhook(w http.ResponseWriter, r *http.Request) {
-	var req WebhookRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	b, err := io.ReadAll(r.Body)
+	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println("we got our webhook data!", req)
+	fmt.Println(string(b))
+	w.WriteHeader(http.StatusOK)
 
 }

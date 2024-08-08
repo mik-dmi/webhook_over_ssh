@@ -97,8 +97,12 @@ func (h *SSHHandler) handleSSFSession(session ssh.Session) {
 	cmd := session.RawCommand()
 	if cmd == "init" {
 		id := shortid.MustGenerate()
-		weebhookURL := "http://localhost:5000/" + id + "\n"
-		session.Write([]byte(weebhookURL))
+		fmt.Println("new init id channel", id)
+		webhookURL := "http://localhost:5000/" + id + "\n"
+		//resp := fmt.Sprintf("webhook url %s\n ssh localhost -p 2222 %s | curl -X POST -d @- http://localhost:3000/payment/webhook \n", webhookURL, id)
+		resp := fmt.Sprintf(`%s  ssh localhost -p 2222 %s | while IFS= read -r line; do echo "$line" | curl -X POST -d @- http://localhost:3000/payment/webhook ; done`, webhookURL, id)
+
+		session.Write([]byte(resp))
 		respCh := make(chan string)
 		h.channels[id] = respCh
 		clients.Store(id, respCh)
@@ -107,7 +111,7 @@ func (h *SSHHandler) handleSSFSession(session ssh.Session) {
 	if len(cmd) > 0 && cmd != "init" {
 		respCh, ok := h.channels[cmd]
 		if !ok {
-			session.Write([]byte("invalid weebhook id\n"))
+			session.Write([]byte("invalid weebhook id \n"))
 			return
 		}
 		for data := range respCh {
