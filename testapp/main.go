@@ -1,8 +1,8 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 )
@@ -20,11 +20,10 @@ type WebhookRequest struct {
 }
 
 func handlePaymentWebhook(w http.ResponseWriter, r *http.Request) {
-	b, err := io.ReadAll(r.Body)
-	if err != nil {
+	fmt.Println(r.Header.Get("Content-Type"))
+	var req WebhookRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println(string(b))
-	w.WriteHeader(http.StatusOK)
-
+	fmt.Println("we got the webhook data!", req)
 }

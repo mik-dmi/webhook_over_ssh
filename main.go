@@ -4,13 +4,16 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/gliderlabs/ssh"
-	"github.com/teris-io/shortid"
 	gossh "golang.org/x/crypto/ssh"
+	"golang.org/x/term"
 )
 
 var clients sync.Map
@@ -48,6 +51,8 @@ func startHTTPServer() error {
 func startSSHServer() error {
 	sshPort := ":2222"
 	handler := NewSSHHandler()
+
+	fwhandler := &ssh.ForwardedTCPHandler{}
 	server := ssh.Server{
 		Addr:    sshPort,
 		Handler: handler.handleSSFSession,
@@ -60,6 +65,19 @@ func startSSHServer() error {
 		},
 		PublicKeyHandler: func(ctx ssh.Context, key ssh.PublicKey) bool {
 			return true
+		},
+		LocalPortForwardingCallback: ssh.LocalPortForwardingCallback(func(ctx ssh.Context, dhost string, dport uint32) bool {
+			log.Println("Accepted foward", dhost, dport)
+			return true
+
+		}),
+		ReversePortForwardingCallback: ssh.ReversePortForwardingCallback(func(ctx ssh.Context, host string, port uint32) bool {
+			log.Println("Accepted foward", host, port, "granted")
+			return true
+		}),
+		RequestHandlers: map[string]ssh.RequestHandler{
+			"tcpip-forward":        fwhandler.HandleSSHRequest,
+			"cancel-tcpip-forward": fwhandler.HandleSSHRequest,
 		},
 	}
 	b, err := os.ReadFile("./keys/privatekey.pub")
@@ -78,6 +96,7 @@ func startSSHServer() error {
 }
 
 func main() {
+
 	go startSSHServer()
 	startHTTPServer()
 
@@ -94,31 +113,38 @@ func NewSSHHandler() *SSHHandler {
 }
 
 func (h *SSHHandler) handleSSFSession(session ssh.Session) {
-	cmd := session.RawCommand()
-	if cmd == "init" {
-		id := shortid.MustGenerate()
-		fmt.Println("new init id channel", id)
-		webhookURL := "http://localhost:5000/" + id + "\n"
-		//resp := fmt.Sprintf("webhook url %s\n ssh localhost -p 2222 %s | curl -X POST -d @- http://localhost:3000/payment/webhook \n", webhookURL, id)
-		resp := fmt.Sprintf(`%s  ssh localhost -p 2222 %s | while IFS= read -r line; do echo "$line" | curl -X POST -d @- http://localhost:3000/payment/webhook ; done`, webhookURL, id)
 
-		session.Write([]byte(resp))
-		respCh := make(chan string)
-		h.channels[id] = respCh
-		clients.Store(id, respCh)
-	}
+	term := term.NewTerminal(session, "")
 
-	if len(cmd) > 0 && cmd != "init" {
-		respCh, ok := h.channels[cmd]
-		if !ok {
-			session.Write([]byte("invalid weebhook id \n"))
-			return
+	for {
+		input, err := term.ReadLine()
+		if err != nil {
+			log.Fatal()
 		}
-		for data := range respCh {
-			session.Write([]byte(data + "\n"))
+		if len(input) == 0 {
+			term.Write([]byte("Welcome to webhooker!\n\nenter webhook distination:"))
+
+		}
+		fmt.Println(input)
+
+		if strings.Contains(input, "ssh -R") {
+			for {
+				time.Sleep(time.Second)
+			}
 		}
 
+		generatedPort := randomPort()
+		webhookURL := fmt.Sprintf("http://localhost:%d", generatedPort)
+		command := fmt.Sprintf("\nGenerated webhook: %s\n\nComand to copy:\nssh -R 127.0.0.1:%d:%s localhost -p 2222\n", webhookURL, generatedPort, input)
+		term.Write([]byte(command))
+		return
 	}
 
-	//fmt.Fprintf(session, "You sent: %s\n", forwardURL) // writes back tot he client
+}
+
+func randomPort() int {
+	min := 49152
+	max := 65535
+	return min + rand.Intn(max-min+1)
+
 }
