@@ -2,10 +2,11 @@ package main
 
 import (
 	"fmt"
-
+	"io"
 	"log"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"os"
 	"sync"
 
@@ -17,8 +18,8 @@ import (
 )
 
 type Session struct {
-	session ssh.Session
-	port    int
+	session     ssh.Session
+	destination string
 }
 
 var clients sync.Map
@@ -33,22 +34,28 @@ func (h *HTTPHandler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte("client id not found"))
+		return
 	}
-
-	session := value.(Session) //type assertion
-	dest := fmt.Sprintf("http://localhost:%d", session.port)
-
-	_, err := http.Post(dest, "application/json", r.Body)
+	session := value.(Session)
+	req, err := http.NewRequest(r.Method, session.destination, r.Body)
 	if err != nil {
 		log.Fatal(err)
 	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer resp.Body.Close()
 	defer r.Body.Close()
+	io.Copy(w, resp.Body)
+
 }
 func startHTTPServer() error {
 	httpPort := ":5000"
 	router := http.NewServeMux()
 	handler := &HTTPHandler{}
 	router.HandleFunc("/{id}", handler.handleWebhook)
+	router.HandleFunc("/{id}/*", handler.handleWebhook)
 	return http.ListenAndServe(httpPort, router)
 }
 func startSSHServer() error {
@@ -58,7 +65,7 @@ func startSSHServer() error {
 	fwhandler := &ssh.ForwardedTCPHandler{}
 	server := ssh.Server{
 		Addr:    sshPort,
-		Handler: handler.handleSSFSession,
+		Handler: handler.handleSSHSession,
 		ServerConfigCallback: func(ctx ssh.Context) *gossh.ServerConfig {
 			cfg := &gossh.ServerConfig{
 				ServerVersion: "SSH-2.0-sendit",
@@ -108,7 +115,7 @@ func NewSSHHandler() *SSHHandler {
 	return &SSHHandler{}
 }
 
-func (h *SSHHandler) handleSSFSession(session ssh.Session) {
+func (h *SSHHandler) handleSSHSession(session ssh.Session) {
 	if session.RawCommand() == "tunnel" {
 		session.Write([]byte("tunnelling traffic...\n"))
 		<-session.Context().Done()
@@ -123,17 +130,26 @@ func (h *SSHHandler) handleSSFSession(session ssh.Session) {
 			log.Fatal()
 		}
 
-		fmt.Println(input)
+		//fmt.Println(input)
 		generatedPort := randomPort()
 		id := shortid.MustGenerate()
+		destination, err := url.Parse(input)
+		if err != nil {
+			log.Fatal(err)
+		}
+		host := destination.Host
+		//fmt.Println("host", host)
+		//path := destination.Path
+		//fmt.Println("path", path)
+
 		internalSession := Session{
-			session: session,
-			port:    generatedPort,
+			session:     session,
+			destination: destination.String(),
 		}
 		clients.Store(id, internalSession)
 
 		webhookURL := fmt.Sprintf("http://localhost:5000/%s", id)
-		command := fmt.Sprintf("\nGenerated webhook: %s\n\nComand to copy:\nssh -R 127.0.0.1:%d:%s localhost -p 2222 tunnel \n\n", webhookURL, generatedPort, input)
+		command := fmt.Sprintf("\nGenerated webhook: %s\n\nComand to copy:\nssh -R 127.0.0.1:%d:%s localhost -p 2222 tunnel \n\n", webhookURL, generatedPort, host)
 		term.Write([]byte(command))
 		return
 	}
