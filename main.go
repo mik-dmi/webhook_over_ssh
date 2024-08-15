@@ -12,10 +12,12 @@ import (
 
 	"github.com/gliderlabs/ssh"
 	"github.com/teris-io/shortid"
-
 	gossh "golang.org/x/crypto/ssh"
 	"golang.org/x/term"
 )
+
+var hostName = "127.0.0.1:3000"
+var pathName = "/payment/webhook"
 
 type Session struct {
 	session     ssh.Session
@@ -61,7 +63,6 @@ func startHTTPServer() error {
 func startSSHServer() error {
 	sshPort := ":2222"
 	handler := NewSSHHandler()
-
 	fwhandler := &ssh.ForwardedTCPHandler{}
 	server := ssh.Server{
 		Addr:    sshPort,
@@ -79,7 +80,6 @@ func startSSHServer() error {
 		LocalPortForwardingCallback: ssh.LocalPortForwardingCallback(func(ctx ssh.Context, dhost string, dport uint32) bool {
 			log.Println("Accepted foward", dhost, dport)
 			return true
-
 		}),
 		ReversePortForwardingCallback: ssh.ReversePortForwardingCallback(func(ctx ssh.Context, host string, port uint32) bool {
 			log.Println("Accepted foward", host, port, "granted")
@@ -108,48 +108,78 @@ func main() {
 	startHTTPServer()
 }
 
+type DestinationAddrHandler struct {
+	host        string
+	path        string
+	destination string //the whole thing
+}
+
+func (destAddress *DestinationAddrHandler) handleDestInput(term *term.Terminal) {
+
+	for destAddress.host == "" || destAddress.path == "" {
+
+		input, err := term.ReadLine()
+		if err != nil {
+			log.Println("Error reading input:", err)
+		}
+
+		destination, err := url.Parse(input)
+		if err != nil {
+			msg := fmt.Sprintf("Input Error: %s.\nTry again:", err.Error())
+			term.Write([]byte(msg))
+			continue
+		}
+		if destination.Host != hostName {
+			term.Write([]byte(fmt.Sprintf("Input Error. The host is not correct. It should be %s.\nTry again: ", hostName)))
+		} else {
+			destAddress.host = hostName
+		}
+		if destination.Path != pathName {
+			term.Write([]byte(fmt.Sprintf("Input Error. The path is not correct. It should be %s.\nTry again: ", pathName)))
+		} else {
+			destAddress.path = pathName
+		}
+		if destAddress.host != "" && destAddress.path != "" {
+			destAddress.destination = destination.String()
+			break
+		}
+
+	}
+
+}
+
 type SSHHandler struct {
 }
 
 func NewSSHHandler() *SSHHandler {
 	return &SSHHandler{}
 }
-
 func (h *SSHHandler) handleSSHSession(session ssh.Session) {
+
 	if session.RawCommand() == "tunnel" {
 		session.Write([]byte("tunnelling traffic...\n"))
 		<-session.Context().Done()
 		return
 	}
 	term := term.NewTerminal(session, "$ ")
-	msg := fmt.Sprintf("%s\n\nWelcome to webhooker!\n\nenter webhook distination:\n", banner)
+	msg := fmt.Sprintf("%s\n\nWelcome to webhooker!\n\nEnter webhook distination:\n", banner)
 	term.Write([]byte(msg))
-	for {
-		input, err := term.ReadLine()
-		if err != nil {
-			log.Fatal()
-		}
+	userDestAddr := &DestinationAddrHandler{}
 
-		//fmt.Println(input)
+	for {
+		userDestAddr.handleDestInput(term)
 		generatedPort := randomPort()
 		id := shortid.MustGenerate()
-		destination, err := url.Parse(input)
-		if err != nil {
-			log.Fatal(err)
-		}
-		host := destination.Host
-		//fmt.Println("host", host)
+		//fmt.Println("host", userDestAddr.host)
 		//path := destination.Path
 		//fmt.Println("path", path)
-
 		internalSession := Session{
 			session:     session,
-			destination: destination.String(),
+			destination: userDestAddr.destination,
 		}
 		clients.Store(id, internalSession)
-
 		webhookURL := fmt.Sprintf("http://localhost:5000/%s", id)
-		command := fmt.Sprintf("\nGenerated webhook: %s\n\nComand to copy:\nssh -R 127.0.0.1:%d:%s localhost -p 2222 tunnel \n\n", webhookURL, generatedPort, host)
+		command := fmt.Sprintf("\nGenerated webhook: %s\n\nComand to copy:\nssh -R 127.0.0.1:%d:%s localhost -p 2222 tunnel \n\n", webhookURL, generatedPort, userDestAddr.host)
 		term.Write([]byte(command))
 		return
 	}
@@ -160,13 +190,11 @@ func randomPort() int {
 	return min + rand.Intn(max-min+1)
 }
 
-var banner = `                                                            
-                                                                       
+var banner = `                                                                                                                             
  #    # ###### ###### #####  #    #  ####   ####  #    # ###### #####  
  #    # #      #      #    # #    # #    # #    # #   #  #      #    # 
  #    # #####  #####  #####  ###### #    # #    # ####   #####  #    # 
  # ## # #      #      #    # #    # #    # #    # #  #   #      #####  
  ##  ## #      #      #    # #    # #    # #    # #   #  #      #   #  
- #    # ###### ###### #####  #    #  ####   ####  #    # ###### #    # 
-                                                                                                                                                             
+ #    # ###### ###### #####  #    #  ####   ####  #    # ###### #    #                                                                                                                                                             
 `
